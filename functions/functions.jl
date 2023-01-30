@@ -11,9 +11,12 @@ function age_values_to_age_groups(ages)
 end
 
 function exponential_proportions(lambda, age_values, unbound_end)
-    ages = age_values_to_ages(age_values)
+    #lambda, age_values, unbound_end = (exp_rate, population[:, 1], true)
+    
+    age_values_adjust = age_values ./ 12
+    ages = age_values_to_ages(age_values_adjust)
 
-    modelled_props = exp.(-lambda .* ages) .- exp.(-lambda .* (ages .+ age_values))
+    modelled_props = exp.(-lambda .* ages) .- exp.(-lambda .* (ages .+ age_values_adjust))
     if unbound_end
         modelled_props[end] = exp(-lambda * ages[end])
     end
@@ -45,7 +48,7 @@ function get_population(age_structure, online)
     5 0.3
     0 1.3]
     #correct final data to make up the last of the age groups in age_structure
-    population[end, 1] = sum(age_structure) - sum(population[:, 1])
+    population[end, 1] = (sum(age_structure)/12) - sum(population[:, 1])
     #does not sum to 1, likely to due to rounding so correct this
     population[:, 2] .= population[:, 2] ./ sum(population[:, 2])
     #a model requirement is that the population is decreasing
@@ -66,6 +69,8 @@ function get_population(age_structure, online)
     #plot to demonstrate fit to data
     age_group = age_values_to_age_groups(population[:, 1])
 
+    population[:, 1] .*= 12
+
     modelled_props = exponential_proportions(exp_rate, population[:, 1], true)
 
     plot(scatter(1:17, population[:, 2], markerstrokewidth=0, label = "Demographic & Health Survery 2021",
@@ -83,16 +88,40 @@ function get_population(age_structure, online)
 end
 
 function determine_bounds(age1, age1_values, age2, index)
+    #age1, age1_values, age2, index = (target_age_pop, target_age_structure, pop_age, i)
     lower = age1[index]
     upper = age1[index] + age1_values[index]
     lower_age_index = sum(lower .>= age2)
     upper_age_index = sum(upper .>= age2)
-    if lower_age_index == upper_age_index
+    if lower_age_index == upper_age_index || (lower_age_index + 1) == (upper_age_index)
         (true, lower_age_index)
     else
         (false, lower_age_index:(upper_age_index - 1))
     end
 end
+
+function restructure_population(raw_pop, pop_age, target_age_structure)
+    #raw_pop, pop_age, target_age_structure = (eth_pop_raw[:, 2], eth_pop_raw[:, 1], age_values)
+    #raw_pop, pop_age, target_age_structure = (eth_pop_raw[:, 2], eth_pop_raw[:, 1], age_structure)
+    
+    pop_age_structure = zeros(size(pop_age))
+    pop_age_structure[1:(size(pop_age)[1] - 1)] .= pop_age[2:(size(pop_age)[1])] .- pop_age[1:(size(pop_age)[1] - 1)]
+    pop_age_structure[end] = sum(target_age_structure) - sum(pop_age_structure)
+
+    target_age_pop = age_values_to_ages(target_age_structure)
+    
+    new_pop = zeros(size(target_age_structure)[1])
+    for i in 1:(size(target_age_structure)[1])
+        is_sub, index = determine_bounds(target_age_pop, target_age_structure, pop_age, i)
+        if is_sub
+            new_pop[i] = raw_pop[index] * target_age_structure[i] / pop_age_structure[index] 
+        else
+            new_pop[i] = sum(raw_pop[index])
+        end
+    end
+    new_pop
+end
+
 
 function get_mixing_matrix(age_structure, online, somaliland_population_rate, somaliland_total_pop)
     if online
@@ -116,9 +145,12 @@ function get_mixing_matrix(age_structure, online, somaliland_population_rate, so
         writedlm("data/raw/contact_matrix_eth_age_groups.csv", age_group, ",")
     end
 
+    target_ages = age_values_to_ages(age_structure)
+
     #read in age groups and extract lower bound on ages
     ages = readdlm("data/raw/contact_matrix_eth_age_groups.csv")[:, 1]
     ages[end] = parse(Int, first.(ages[end], 2))
+    ages .*= 12 #make months
     age_values = ages[2:size(ages)[1]] .- ages[1:(size(ages)[1] - 1)]
     push!(age_values, (sum(age_structure) - ages[end]))
     #contactee is on the vertical, values are mean number of contacts a day
@@ -126,48 +158,45 @@ function get_mixing_matrix(age_structure, online, somaliland_population_rate, so
 
     #get ethiopias population data from wpp (https://population.un.org/wpp/)
     eth_pop_raw = readdlm("data/raw/wpp_2022_Ethiopia_ages.csv", ',')
-    mixing_age_index = map(x -> (sum(x .>= ages)), eth_pop_raw[:, 1])
-    eth_pop = map(x -> sum(eth_pop_raw[mixing_age_index .== x, 2]), 1:(size(ages)[1])) .* 1000
 
-    #assume this captures some level of mixing that is independant on the size of the contactor
-    mixing_per_age_per_age = raw_mixing_matrix #TEMP Not sure this holds
+    eth_pop = restructure_population(eth_pop_raw[:, 2], eth_pop_raw[:, 1], age_values) .* 1000
+    eth_pop_correct_age_structure = restructure_population(eth_pop_raw[:, 2], eth_pop_raw[:, 1], age_structure) .* 1000
 
-    #calculate the somaliland population from the exponential distribution
-    sml_pop = exponential_proportions(somaliland_population_rate, age_values, true) .* somaliland_total_pop
-
-    #assume this is constant over the sub age groups and = a weighted average when combining age groups (based on somaliland data)
-    target_ages = age_values_to_ages(age_structure)
-    n_age = size(age_structure)[1]
-    new_mixing = zeros((n_age, n_age))
-    for target_index_i in 1:n_age
-        index_i_is_sub, index_i_bounds = determine_bounds(target_ages, age_structure, ages, target_index_i)
-        for target_index_j in 1:n_age
-            index_j_is_sub, index_j_bounds = determine_bounds(target_ages, age_structure, ages, target_index_j)
-            if index_i_is_sub & index_j_is_sub
-                #if both are sub-age groups
-                new_mixing[target_index_i, target_index_j] = mixing_per_age_per_age[index_i_bounds, index_j_bounds]
-            elseif !index_i_is_sub & !index_j_is_sub
-                #both are larger than one age group
-                #take a population weighted average of all values
-                new_mixing[target_index_i, target_index_j] = 
-                    sum(mixing_per_age_per_age[index_i_bounds, index_j_bounds] .* (sml_pop[index_i_bounds] .* reshape(sml_pop[index_j_bounds], (1, size(index_j_bounds)[1])))) / 
-                        sum((sml_pop[index_i_bounds] .* reshape(sml_pop[index_j_bounds], (1, size(index_j_bounds)[1]))))
-            elseif index_i_is_sub
-                new_mixing[target_index_i, target_index_j] = sum(mixing_per_age_per_age[index_i_bounds, index_j_bounds] .* 
-                    sml_pop[index_j_bounds]) / sum(sml_pop[index_j_bounds])
-            elseif index_j_is_sub
-                new_mixing[target_index_i, target_index_j] = sum(mixing_per_age_per_age[index_i_bounds, index_j_bounds] .* 
-                    sml_pop[index_i_bounds]) / sum(sml_pop[index_i_bounds])
+    #now convert to the age structure needed
+    converted_matrix_partial = zeros((size(age_structure)[1], size(age_values)[1]))
+    for i in 1:size(age_structure)[1]
+        is_sub, index = determine_bounds(target_ages, age_structure, ages, i)
+        for j in 1:size(age_values)[1]
+            if is_sub
+                #if its just an age group within a larger one we just set the value to be the same
+                converted_matrix_partial[i, j] = raw_mixing_matrix[index, j]
+            else
+                #if there are multiple age groups within it we set the value to their weighted means
+                converted_matrix_partial[i, j] = sum(raw_mixing_matrix[index, j] .* eth_pop[index]) ./ sum(eth_pop[index])
             end
         end
     end
-    
-    #count contacts as going both ways (would be alright if there's not differential on mis classifying ages)
-    new_mixing .+= transpose(new_mixing) 
 
-    #rescale so that total level of activity remains the same as the Ethiopia matrix
-    scaled_mixing_matrix = new_mixing .* (sum(raw_mixing_matrix) / sum(new_mixing))
-    
-    #should be fine?
-    scaled_mixing_matrix
+    #now expand out in terms of the contactees
+    converted_matrix = zeros(size(age_structure)[1], size(age_structure)[1])
+    for i in 1:size(age_structure)[1]
+        is_sub, index = determine_bounds(target_ages, age_structure, ages, i)
+        for j in 1:size(age_structure)[1]
+            if is_sub
+                #if its just an age group within a larger one we assume that contact rates are uniform within that age group
+                converted_matrix[j, i] = converted_matrix_partial[j, index] * eth_pop_correct_age_structure[i] / eth_pop[index]
+            else
+                #if there are multiple age groups within it we set the value to their sum
+                converted_matrix[j, i] = sum(converted_matrix_partial[j, index])
+            end
+        end
+    end
+
+    #get the somaliland population
+    sml_pop = exponential_proportions(somaliland_population_rate, age_structure, true) .* somaliland_total_pop
+
+    #convert to somaliland context by assuming that contacts are proportion to age group size as a proportion of the total population
+    finalized_matrix = converted_matrix #.* reshape(((sml_pop ./ sum(sml_pop)) ./ (eth_pop_correct_age_structure ./ sum(eth_pop_correct_age_structure))), (1, size(age_structure)[1]))
+
+    finalized_matrix
 end
