@@ -162,6 +162,11 @@ function get_mixing_matrix(age_structure, online, somaliland_population_rate, so
     eth_pop = restructure_population(eth_pop_raw[:, 2], eth_pop_raw[:, 1], age_values) .* 1000
     eth_pop_correct_age_structure = restructure_population(eth_pop_raw[:, 2], eth_pop_raw[:, 1], age_structure) .* 1000
 
+    #for computation simplicty we'll normalise these values
+    mx_value = maximum([maximum(eth_pop), maximum(eth_pop_correct_age_structure)])
+    eth_pop ./= mx_value
+    eth_pop_correct_age_structure ./= mx_value
+    
     #now convert to the age structure needed
     converted_matrix_partial = zeros((size(age_structure)[1], size(age_values)[1]))
     for i in 1:size(age_structure)[1]
@@ -181,10 +186,16 @@ function get_mixing_matrix(age_structure, online, somaliland_population_rate, so
     converted_matrix = zeros(size(age_structure)[1], size(age_structure)[1])
     for i in 1:size(age_structure)[1]
         is_sub, index = determine_bounds(target_ages, age_structure, ages, i)
+        if is_sub
+            #find all indexes of the new age group in this index
+            is_sub_other, indexes = determine_bounds(ages, age_values, target_ages, index)
+            #now we ensure that our subcompartments sum to the same pop
+            multipler = eth_pop_correct_age_structure[i]/sum(eth_pop_correct_age_structure[indexes])
+        end
         for j in 1:size(age_structure)[1]
             if is_sub
                 #if its just an age group within a larger one we assume that contact rates are uniform within that age group
-                converted_matrix[j, i] = converted_matrix_partial[j, index] * eth_pop_correct_age_structure[i] / eth_pop[index]
+                converted_matrix[j, i] = converted_matrix_partial[j, index] * multipler
             else
                 #if there are multiple age groups within it we set the value to their sum
                 converted_matrix[j, i] = sum(converted_matrix_partial[j, index])
@@ -192,8 +203,13 @@ function get_mixing_matrix(age_structure, online, somaliland_population_rate, so
         end
     end
 
+    #these should be nearly identical but they are not!
+    #sum(converted_matrix_partial .* eth_pop_correct_age_structure, dims = 2)
+    #sum(converted_matrix .* eth_pop_correct_age_structure, dims = 2)
+    #(sum(raw_mixing_matrix .* eth_pop), sum(converted_matrix_partial .* eth_pop_correct_age_structure), sum(converted_matrix .* eth_pop_correct_age_structure))
+
     #get the somaliland population
-    sml_pop = exponential_proportions(somaliland_population_rate, age_structure, true) .* somaliland_total_pop
+    #sml_pop = exponential_proportions(somaliland_population_rate, age_structure, true) .* somaliland_total_pop
 
     #convert to somaliland context by assuming that contacts are proportion to age group size as a proportion of the total population
     finalized_matrix = converted_matrix #.* reshape(((sml_pop ./ sum(sml_pop)) ./ (eth_pop_correct_age_structure ./ sum(eth_pop_correct_age_structure))), (1, size(age_structure)[1]))
