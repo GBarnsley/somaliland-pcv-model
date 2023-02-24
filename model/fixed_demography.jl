@@ -44,20 +44,22 @@ function pcvm!(du, u, p, t)
     B = @view u[4, :, :]
     #vaccinations (based upon ageing so this calculates before the ageing)
     vaccination_u .= u[:, age_offset_1, :] #to hold the effective proportions accounting for vaccinations
-    for dose in 1:n_dose
+    if n_dose > 0
+        for dose in 1:n_dose
 
-        vaccinated .= sum(u[:, :, vaccine_dose_compartments[dose + 1]], dims = (1, 3))[:, age_offset_1, :] 
-        unvaccinated .= sum(u[:, :, vaccine_dose_compartments[dose]], dims = (1, 3))[:, age_offset_1, :]
+            vaccinated .= sum(u[:, :, vaccine_dose_compartments[dose + 1]], dims = (1, 3))[:, age_offset_1, :] 
+            unvaccinated .= sum(u[:, :, vaccine_dose_compartments[dose]], dims = (1, 3))[:, age_offset_1, :]
 
-        #cannot preassing this as it is of variable length
-        to_be_vaccinated = (((vaccine_coverage[:, age_offset_1, dose] .* (vaccinated .+ unvaccinated)) .- vaccinated) ./ unvaccinated) .* u[:, age_offset_1, vaccine_dose_compartments[dose]]
-        
-        #does not apply when coverage is higher than the target
-        to_be_vaccinated[to_be_vaccinated .< 0] .= 0.0
-        to_be_vaccinated[isnan.(to_be_vaccinated)] .= 0.0
+            #cannot preassing this as it is of variable length
+            to_be_vaccinated = (((vaccine_coverage[:, age_offset_1, dose] .* (vaccinated .+ unvaccinated)) .- vaccinated) ./ unvaccinated) .* u[:, age_offset_1, vaccine_dose_compartments[dose]]
 
-        vaccination_u[:, :, vaccine_dose_compartments[dose + 1][1]] .+= sum(to_be_vaccinated, dims = 3)
-        vaccination_u[:, :, vaccine_dose_compartments[dose]] .-= to_be_vaccinated
+            #does not apply when coverage is higher than the target
+            to_be_vaccinated[to_be_vaccinated .< 0] .= 0.0
+            to_be_vaccinated[isnan.(to_be_vaccinated)] .= 0.0
+
+            vaccination_u[:, :, vaccine_dose_compartments[dose + 1][1]] .+= sum(to_be_vaccinated, dims = 3)
+            vaccination_u[:, :, vaccine_dose_compartments[dose]] .-= to_be_vaccinated
+        end
     end
     #ageing and deaths + births
     older_age_groups = @view u[:, age_offset_2, :]
